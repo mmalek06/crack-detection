@@ -168,5 +168,5 @@ tmp_models/
 histories/
 */train_images/*
 */test_images/*
-*/**/labels.npy
-*/**/stats.npy
+labels.npy
+stats.npy
