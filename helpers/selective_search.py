@@ -49,9 +49,9 @@ def get_best_bbox_for_proposal(stats: torch.Tensor, bbox_preds: torch.Tensor) ->
     if stats.size(1) == 0:
         return torch.empty(0, 4, dtype=stats.dtype, device=stats.device)
 
-    bbox_preds_expanded = bbox_preds.unsqueeze(0)
-    ious = torchvision.ops.box_iou(bbox_preds_expanded, stats.squeeze(0))
-    best_stat_idx = ious.argmax().item()
-    best_stat = stats[0, best_stat_idx].unsqueeze(0)
+    stats = stats.squeeze(0)
+    ious = torchvision.ops.box_iou(bbox_preds, stats)
+    best_stat_idx = ious.squeeze(0).argmax().item()
+    best_stat = stats[best_stat_idx].unsqueeze(0)
 
     return best_stat

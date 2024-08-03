@@ -1,51 +1,87 @@
-import pickle
+import json
+import os
 
 import cv2
 import numpy as np
+import torch
 
 from torch.utils.data import Dataset
 
 
 class CrackDataset(Dataset):
-    def __init__(self, image_paths: list[str], labels_path: str, stats_path: str):
-        self.image_paths = image_paths
-        self.all_labels = CrackDataset._load_incremental_data(labels_path, np.int64, trim=False)
-        self.all_stats = CrackDataset._load_incremental_data(stats_path, np.float32, trim=True)
+    def __init__(self, coco_file_path: str, images_dir: str):
+        with open(coco_file_path, "r") as f:
+            self.coco_data = json.load(f)
 
-    def __len__(self):
-        return len(self.all_labels)
+        self.images_dir = images_dir
+        self.image_data = {img["id"]: img for img in self.coco_data["images"]}
+        self.annotations = self._group_annotations_by_image(self.coco_data["annotations"])
+
+    def __len__(self) -> int:
+        return len(self.image_data)
 
     def __getitem__(self, idx: int) -> tuple[str, np.ndarray, np.ndarray, np.ndarray]:
-        image = CrackDataset._load_image(self.image_paths[idx])
-        labels = self.all_labels[idx]
-        stats = self.all_stats[idx]
+        image_info = self.image_data[idx + 1]
+        image_path = os.path.join(self.images_dir, image_info["file_name"])
+        image = CrackDataset._load_image(image_path)
+        annotations = self.annotations.get(image_info["id"], [])
+        labels, bboxes = self._parse_annotations(annotations, image.shape[0], image.shape[1])
 
-        return self.image_paths[idx], image, labels, stats
+        return image_path, image, labels, bboxes
 
     @staticmethod
-    def _load_incremental_data(file_path: str, dtype, trim: bool) -> list[np.ndarray]:
-        data = []
+    def _group_annotations_by_image(annotations: list[dict]) -> dict[int, list[dict]]:
+        grouped_annotations = {}
 
-        with open(file_path, "rb") as f:
-            while True:
-                try:
-                    batch = pickle.load(f)
+        for annotation in annotations:
+            image_id = annotation["image_id"]
 
-                    if trim:
-                        # skip the first row and the last column in each row
-                        # it's done like this because find_boxes function saved all that cv2 module spat out
-                        processed_batch = [np.array(item[1:, :-1], dtype=dtype) for item in batch]
-                    else:
-                        processed_batch = [np.array(item, dtype=dtype) for item in batch]
+            if image_id not in grouped_annotations:
+                grouped_annotations[image_id] = []
 
-                    data.extend(processed_batch)
-                except EOFError:
-                    break
+            grouped_annotations[image_id].append(annotation)
 
-        return data
+        return grouped_annotations
+
+    @staticmethod
+    def _parse_annotations(annotations: list[dict], img_height: int, img_width: int) -> tuple[np.ndarray, np.ndarray]:
+        labels = np.zeros((img_height, img_width), dtype=np.int64)
+        bboxes = []
+
+        for idx, annotation in enumerate(annotations):
+            bbox = annotation["bbox"]
+            x_min, y_min, width, height = map(int, bbox)
+            x_max, y_max = x_min + width, y_min + height
+            labels[y_min:y_max, x_min:x_max] = idx + 1
+
+            bboxes.append([x_min, y_min, x_max, y_max])
+
+        return labels, np.array(bboxes, dtype=np.float32)
 
     @staticmethod
     def _load_image(image_path: str) -> np.ndarray:
         image = cv2.imread(image_path, cv2.IMREAD_COLOR)
 
         return image
+
+
+def collate_variable_size_bboxes(
+        batch: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]]
+) -> tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    This function takes the batch of data and handles the variable-size bounding boxes by padding them
+    to the maximum number of bounding boxes in the batch
+    :param batch:
+    :return:
+    """
+    image_paths, images, labels, bboxes = zip(*batch)
+    images = torch.stack([torch.from_numpy(img) for img in images])
+    labels = torch.stack([torch.from_numpy(lbl) for lbl in labels])
+    max_num_bboxes = max(len(bbox) for bbox in bboxes)
+    padded_bboxes = torch.zeros((len(bboxes), max_num_bboxes, 4), dtype=torch.float32)
+
+    for i, bbox in enumerate(bboxes):
+        if len(bbox) > 0:
+            padded_bboxes[i, :len(bbox)] = torch.from_numpy(bbox)
+
+    return image_paths, images, labels, padded_bboxes

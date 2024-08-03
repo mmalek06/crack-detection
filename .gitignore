@@ -169,5 +169,4 @@ histories/
 */train_images/*
 */test_images/*
 */test_normalized/*
-labels.*
-stats.*
+coco_annotations.json
