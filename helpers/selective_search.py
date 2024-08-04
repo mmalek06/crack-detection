@@ -44,14 +44,47 @@ def get_best_bbox_for_proposal(stats: torch.Tensor, bbox_preds: torch.Tensor) ->
 
     :param stats: Tensor of bounding boxes (e.g., (1, x, 4)) where x is the number of bounding boxes
     :param bbox_preds: Predicted bounding box from the model in (x_min, y_min, x_max, y_max) format
-    :return: The best matching bounding box from stats
+    :return: The best matching bounding box from stats, or an empty tensor if none are valid
     """
-    if stats.size(1) == 0:
+    if stats.size(1) == 0 or bbox_preds.size(0) == 0:
         return torch.empty(0, 4, dtype=stats.dtype, device=stats.device)
 
     stats = stats.squeeze(0)
+
+    print(f"Stats shape: {stats.shape}")
+    print(f"bbox_preds shape: {bbox_preds.shape}")
+
+    valid_indices = ~(stats == 0).all(dim=1)
+    print(f"Valid indices: {valid_indices}")
+
+    stats = stats[valid_indices]
+    print(f"Filtered stats shape: {stats.shape}")
+
+    # Further filter out bounding boxes where x_min >= x_max or y_min >= y_max
+    invalid_indices = (stats[:, 0] >= stats[:, 2]) | (stats[:, 1] >= stats[:, 3])
+    if torch.any(invalid_indices):
+        stats = stats[~invalid_indices]
+
+    if stats.size(0) == 0:
+        # No valid ground truth bounding boxes
+        return torch.empty(0, 4, dtype=stats.dtype, device=stats.device)
+
+    # Clamp bbox_preds to ensure valid values (using out-of-place operations)
+    bbox_preds = bbox_preds.clone()  # Clone to avoid modifying the original tensor
+    bbox_preds[:, 0] = torch.clamp(bbox_preds[:, 0], min=0)  # x_min >= 0
+    bbox_preds[:, 1] = torch.clamp(bbox_preds[:, 1], min=0)  # y_min >= 0
+    bbox_preds[:, 2] = torch.clamp(bbox_preds[:, 2], min=bbox_preds[:, 0] + 1)  # x_max > x_min
+    bbox_preds[:, 3] = torch.clamp(bbox_preds[:, 3], min=bbox_preds[:, 1] + 1)  # y_max > y_min
+
+    if torch.any(bbox_preds[:, 0] >= bbox_preds[:, 2]) or torch.any(bbox_preds[:, 1] >= bbox_preds[:, 3]):
+        return torch.empty(0, 4, dtype=stats.dtype, device=stats.device)
+
     ious = torchvision.ops.box_iou(bbox_preds, stats)
-    best_stat_idx = ious.squeeze(0).argmax().item()
+    if ious.numel() == 0 or torch.any(torch.isnan(ious)):
+        return torch.empty(0, 4, dtype=stats.dtype, device=stats.device)
+
+    best_stat_idx = ious.argmax().item()
     best_stat = stats[best_stat_idx].unsqueeze(0)
 
     return best_stat
+
