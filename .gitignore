@@ -170,3 +170,4 @@ histories/
 */test_images/*
 */test_normalized/*
 coco_annotations.json
+checkpoints/*
