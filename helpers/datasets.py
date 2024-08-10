@@ -1,10 +1,11 @@
 import json
 import os
-
+import PIL.Image
 import cv2
 import numpy as np
 import torch
 
+from torchvision import transforms
 from torch.utils.data import Dataset
 
 
@@ -63,6 +64,25 @@ class CrackDataset(Dataset):
         image = cv2.imread(image_path, cv2.IMREAD_COLOR)
 
         return image
+
+
+class CrackDatasetForClassification(Dataset):
+    def __init__(self, images_dir, transform: transforms.Compose):
+        self.images_dir = images_dir
+        self.image_files = [f for f in os.listdir(images_dir) if os.path.isfile(os.path.join(images_dir, f))]
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.image_files)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
+        img_name = self.image_files[idx]
+        img_path = os.path.join(self.images_dir, img_name)
+        image = PIL.Image.open(img_path).convert("RGB")
+        label = 0 if "noncrack" in img_name else 1
+        image = self.transform(image)
+
+        return image, label
 
 
 def collate_variable_size_bboxes(
