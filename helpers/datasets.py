@@ -1,12 +1,10 @@
+import cv2
 import json
 import os
-import PIL.Image
-import cv2
-import numpy as np
 import torch
+import numpy as np
 
-from torchvision import transforms
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, default_collate
 
 
 class CrackDataset(Dataset):
@@ -21,12 +19,19 @@ class CrackDataset(Dataset):
     def __len__(self) -> int:
         return len(self.image_data)
 
-    def __getitem__(self, idx: int) -> tuple[str, np.ndarray, np.ndarray, np.ndarray]:
+    def __getitem__(self, idx: int) -> tuple[str, np.ndarray, list[int], np.ndarray]:
+        """
+        Returns:
+        - image_path: path to the image
+        - image: the image as a numpy array
+        - labels: a list of foreground/background labels (1 for crack, 0 for background)
+        - bboxes: a list of bounding boxes in [x_min, y_min, x_max, y_max] format
+        """
         image_info = self.image_data[idx + 1]
         image_path = os.path.join(self.images_dir, image_info["file_name"])
         image = CrackDataset._load_image(image_path)
         annotations = self.annotations.get(image_info["id"], [])
-        labels, bboxes = self._parse_annotations(annotations, image.shape[0], image.shape[1])
+        labels, bboxes = self._parse_annotations(annotations)
 
         return image_path, image, labels, bboxes
 
@@ -45,17 +50,35 @@ class CrackDataset(Dataset):
         return grouped_annotations
 
     @staticmethod
-    def _parse_annotations(annotations: list[dict], img_height: int, img_width: int) -> tuple[np.ndarray, np.ndarray]:
-        labels = np.zeros((img_height, img_width), dtype=np.int64)
+    def _parse_annotations(annotations: list[dict]) -> tuple[list[int], np.ndarray]:
+        """
+        Convert the annotations into binary labels (1 for crack, 0 for background) and bounding boxes.
+
+        Returns:
+        - labels: List of 1s (for cracks, i.e., foreground) and 0s (for background)
+        - bboxes: A list of bounding boxes in the format [x_min, y_min, x_max, y_max].
+        """
+        labels = []
         bboxes = []
 
-        for idx, annotation in enumerate(annotations):
-            bbox = annotation["bbox"]
-            x_min, y_min, width, height = map(int, bbox)
-            x_max, y_max = x_min + width, y_min + height
-            labels[y_min:y_max, x_min:x_max] = idx + 1
+        for annotation in annotations:
+            bbox = annotation.get("bbox", [])
 
+            if not bbox or len(bbox) != 4:
+                continue
+
+            x_min, y_min, width, height = map(int, bbox)
+
+            if width <= 0 or height <= 0:
+                continue
+
+            x_max, y_max = x_min + width, y_min + height
+
+            labels.append(1)
             bboxes.append([x_min, y_min, x_max, y_max])
+
+        if not bboxes:
+            return [], np.zeros((0, 4), dtype=np.float32)
 
         return labels, np.array(bboxes, dtype=np.float32)
 
@@ -66,42 +89,23 @@ class CrackDataset(Dataset):
         return image
 
 
-class CrackDatasetForClassification(Dataset):
-    def __init__(self, images_dir, transform: transforms.Compose):
-        self.images_dir = images_dir
-        self.image_files = [f for f in os.listdir(images_dir) if os.path.isfile(os.path.join(images_dir, f))]
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.image_files)
-
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
-        img_name = self.image_files[idx]
-        img_path = os.path.join(self.images_dir, img_name)
-        image = PIL.Image.open(img_path).convert("RGB")
-        label = 0 if "noncrack" in img_name else 1
-        image = self.transform(image)
-
-        return image, label
-
-
-def collate_variable_size_bboxes(
-        batch: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]]
-) -> tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor]:
+def custom_collate_fn(batch):
     """
-    This function takes the batch of data and handles the variable-size bounding boxes by padding them
-    to the maximum number of bounding boxes in the batch
-    :param batch:
-    :return:
+    Custom collate function to handle variable-size bounding boxes.
+    Args:
+    - batch: list of tuples (image_path, image, labels, bboxes)
     """
     image_paths, images, labels, bboxes = zip(*batch)
-    images = torch.stack([torch.from_numpy(img) for img in images])
-    labels = torch.stack([torch.from_numpy(lbl) for lbl in labels])
-    max_num_bboxes = max(len(bbox) for bbox in bboxes)
-    padded_bboxes = torch.zeros((len(bboxes), max_num_bboxes, 4), dtype=torch.float32)
+    images = default_collate(images)
+    max_num_boxes = max([len(b) for b in bboxes])
+    padded_bboxes = []
+    padded_labels = []
 
-    for i, bbox in enumerate(bboxes):
-        if len(bbox) > 0:
-            padded_bboxes[i, :len(bbox)] = torch.from_numpy(bbox)
+    for label, bbox in zip(labels, bboxes):
+        padded_labels.append(label + [0] * (max_num_boxes - len(label)))
+        padded_bboxes.append(np.pad(bbox, ((0, max_num_boxes - len(bbox)), (0, 0)), 'constant'))
 
-    return image_paths, images, labels, padded_bboxes
+    padded_labels = torch.tensor(padded_labels)
+    padded_bboxes = torch.tensor(padded_bboxes, dtype=torch.float32)
+
+    return image_paths, images, padded_labels, padded_bboxes
