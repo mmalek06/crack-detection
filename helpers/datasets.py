@@ -2,9 +2,11 @@ import cv2
 import json
 import os
 import torch
+import PIL.Image
 import numpy as np
 
-from torch.utils.data import Dataset, default_collate
+from torchvision import transforms
+from torch.utils.data import Dataset
 
 
 class CrackDataset(Dataset):
@@ -86,23 +88,28 @@ class CrackDataset(Dataset):
         return image
 
 
-def custom_collate_fn(batch):
-    """
-    Custom collate function to handle variable-size bounding boxes.
-    Args:
-    - batch: list of tuples (image_path, image, labels, bboxes)
-    """
-    image_paths, images, labels, bboxes = zip(*batch)
-    images = default_collate(images)
-    max_num_boxes = max([len(b) for b in bboxes])
-    padded_bboxes = []
-    padded_labels = []
+class CrackDatasetForClassification(Dataset):
+    def __init__(self, images_dir, transform: transforms.Compose):
+        self.images_dir = images_dir
+        self.image_files = [f for f in os.listdir(images_dir) if os.path.isfile(os.path.join(images_dir, f))]
+        self.transform = transform
 
-    for label, bbox in zip(labels, bboxes):
-        padded_labels.append(label + [0] * (max_num_boxes - len(label)))
-        padded_bboxes.append(np.pad(bbox, ((0, max_num_boxes - len(bbox)), (0, 0)), "constant"))
+    def __len__(self):
+        return len(self.image_files)
 
-    padded_labels = torch.tensor(padded_labels)
-    padded_bboxes = torch.tensor(padded_bboxes, dtype=torch.float32)
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
+        img_name = self.image_files[idx]
+        img_path = os.path.join(self.images_dir, img_name)
+        image = PIL.Image.open(img_path).convert("RGB")
+        label = 0 if "noncrack" in img_name else 1
+        image = self.transform(image)
 
-    return image_paths, images, padded_labels, padded_bboxes
+        return image, label
+
+
+def custom_collate_fn(batch) -> tuple[list[str], list[np.ndarray], list[int]]:
+    image_paths, images, bboxes = zip(*batch)
+    images = list(images)
+    bboxes = list(bboxes)
+
+    return list(image_paths), images, bboxes
