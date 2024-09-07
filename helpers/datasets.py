@@ -19,7 +19,7 @@ class CrackDataset(Dataset):
     def __len__(self) -> int:
         return len(self.image_data)
 
-    def __getitem__(self, idx: int) -> tuple[str, np.ndarray, list[int], np.ndarray]:
+    def __getitem__(self, idx: int) -> tuple[str, np.ndarray, np.ndarray]:
         """
         Returns:
         - image_path: path to the image
@@ -31,9 +31,9 @@ class CrackDataset(Dataset):
         image_path = os.path.join(self.images_dir, image_info["file_name"])
         image = CrackDataset._load_image(image_path)
         annotations = self.annotations.get(image_info["id"], [])
-        labels, bboxes = self._parse_annotations(annotations)
+        bboxes = self._parse_annotations(annotations)
 
-        return image_path, image, labels, bboxes
+        return image_path, image, bboxes
 
     @staticmethod
     def _group_annotations_by_image(annotations: list[dict]) -> dict[int, list[dict]]:
@@ -50,15 +50,13 @@ class CrackDataset(Dataset):
         return grouped_annotations
 
     @staticmethod
-    def _parse_annotations(annotations: list[dict]) -> tuple[list[int], np.ndarray]:
+    def _parse_annotations(annotations: list[dict]) -> np.ndarray:
         """
         Convert the annotations into binary labels (1 for crack, 0 for background) and bounding boxes.
 
         Returns:
-        - labels: List of 1s (for cracks, i.e., foreground) and 0s (for background)
         - bboxes: A list of bounding boxes in the format [x_min, y_min, x_max, y_max].
         """
-        labels = []
         bboxes = []
 
         for annotation in annotations:
@@ -74,13 +72,12 @@ class CrackDataset(Dataset):
 
             x_max, y_max = x_min + width, y_min + height
 
-            labels.append(1)
             bboxes.append([x_min, y_min, x_max, y_max])
 
         if not bboxes:
-            return [], np.zeros((0, 4), dtype=np.float32)
+            return np.zeros((0, 4), dtype=np.float32)
 
-        return labels, np.array(bboxes, dtype=np.float32)
+        return np.array(bboxes, dtype=np.float32)
 
     @staticmethod
     def _load_image(image_path: str) -> np.ndarray:
@@ -103,7 +100,7 @@ def custom_collate_fn(batch):
 
     for label, bbox in zip(labels, bboxes):
         padded_labels.append(label + [0] * (max_num_boxes - len(label)))
-        padded_bboxes.append(np.pad(bbox, ((0, max_num_boxes - len(bbox)), (0, 0)), 'constant'))
+        padded_bboxes.append(np.pad(bbox, ((0, max_num_boxes - len(bbox)), (0, 0)), "constant"))
 
     padded_labels = torch.tensor(padded_labels)
     padded_bboxes = torch.tensor(padded_bboxes, dtype=torch.float32)
