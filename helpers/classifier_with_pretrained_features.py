@@ -5,7 +5,7 @@ import torchvision.models as models
 from torchvision.models import ResNeXt50_32X4D_Weights
 
 
-class Resnext50FeatureExtractor(nn.Module):
+class Resnext50BasedClassifier(nn.Module):
     def __init__(
             self,
             input_shape: tuple[int, int, int] = (3, 224, 224),
@@ -37,3 +37,12 @@ class Resnext50FeatureExtractor(nn.Module):
         return x
 
 
+class Resnext50BasedClassifierForProposals(Resnext50BasedClassifier):
+    def forward(self, x) -> torch.Tensor:
+        batch_size, num_proposals, channels, height, width = x.shape
+        x = x.view(-1, channels, height, width)
+        x = self.feature_extractor(x)
+        x = self.classifier(x)
+        x = x.view(batch_size, num_proposals)
+
+        return x
