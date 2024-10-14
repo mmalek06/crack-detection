@@ -37,12 +37,33 @@ class Resnext50BasedClassifier(nn.Module):
         return x
 
 
-class Resnext50BasedClassifierForProposals(Resnext50BasedClassifier):
-    def forward(self, x) -> torch.Tensor:
-        batch_size, num_proposals, channels, height, width = x.shape
-        x = x.view(-1, channels, height, width)
-        x = self.feature_extractor(x)
-        x = self.classifier(x)
-        x = x.view(batch_size, num_proposals)
+class Resnext50BasedClassifierForProposals(nn.Module):
+    def __init__(
+            self,
+            input_shape: tuple[int, int, int] = (3, 224, 224),
+            linear_layers_features: int = 512
+    ):
+        super().__init__()
 
-        return x
+        self.feature_extractor = models.resnext50_32x4d(weights=ResNeXt50_32X4D_Weights.DEFAULT)
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(self._get_feature_size(input_shape), linear_layers_features),
+            nn.ReLU(inplace=True),
+            nn.Linear(linear_layers_features, linear_layers_features),
+            nn.ReLU(inplace=True),
+            nn.Linear(linear_layers_features, 1)
+        )
+
+    def _get_feature_size(self, shape):
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, *shape)
+            features = self.feature_extractor(dummy_input)
+
+            return features.numel()
+
+    def forward(self, x):
+        features = self.feature_extractor(x)
+        class_scores = self.classifier(features)
+
+        return class_scores
