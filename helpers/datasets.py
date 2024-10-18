@@ -8,7 +8,7 @@ import PIL.Image
 import numpy as np
 import torchvision
 
-from torchvision import transforms
+from torchvision.transforms import v2
 from torch.utils.data import Dataset
 
 
@@ -24,12 +24,12 @@ class CrackDataset(Dataset):
             if CrackDataset._load_image(os.path.join(self.images_dir, img["file_name"])) is not None
         ]
         self.annotations = self._group_annotations_by_image(self.coco_data["annotations"])
-        self.transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((224, 224)),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225]),
-            transforms.ToTensor()
+        self.transform = v2.Compose([
+            v2.ToPILImage(),
+            v2.Resize((224, 224)),
+            v2.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225]),
+            v2.ToTensor()
         ])
 
     def __len__(self) -> int:
@@ -101,7 +101,7 @@ class CrackDataset(Dataset):
 
 
 class CrackDatasetForClassification(Dataset):
-    def __init__(self, images_dir, transform: transforms.Compose):
+    def __init__(self, images_dir, transform: v2.Compose):
         self.images_dir = images_dir
         self.image_files = [f for f in os.listdir(images_dir) if os.path.isfile(os.path.join(images_dir, f))]
         self.transform = transform
@@ -137,10 +137,17 @@ class CrackDatasetForClassificationWithProposals(Dataset):
             if CrackDatasetForClassificationWithProposals._load_image(os.path.join(self.images_dir, img["file_name"])) is not None
         ]
         self.annotations = self._group_annotations_by_image(self.coco_data["annotations"])
-        self.transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((224, 224)),
-            transforms.ToTensor()
+        self.base_transform = v2.Compose([
+            v2.ToPILImage(),
+            v2.Resize((224, 224)),
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+        ])
+        self.feature_extractor_transform = v2.Compose([
+            v2.ColorJitter(brightness=0.5),
+            v2.RandomHorizontalFlip(p=0.5),
+            v2.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
         ])
 
     def __len__(self) -> int:
@@ -150,7 +157,7 @@ class CrackDatasetForClassificationWithProposals(Dataset):
         image_info = self.image_data[idx]
         image_path = os.path.join(self.images_dir, image_info["file_name"])
         image = CrackDatasetForClassificationWithProposals._load_image(image_path)
-        image = self.transform(image)
+        image = self.base_transform(image)
         proposals = self.selective_search_runner(image.permute(1, 2, 0).numpy(), image_path)
         ground_truth_boxes = torch.tensor(
             self._parse_annotations(self.annotations.get(image_info["id"], [])),
@@ -159,10 +166,13 @@ class CrackDatasetForClassificationWithProposals(Dataset):
         if ground_truth_boxes.numel() == 0:
             return image, proposals, torch.zeros(proposals.size(0))
 
-        ious = torchvision.ops.box_iou(proposals, ground_truth_boxes)
-        labels = (ious.max(dim=1)[0] > 0.01).float()
+        if torch.any(proposals):
+            ious = torchvision.ops.box_iou(proposals, ground_truth_boxes)
+            labels = (ious.max(dim=1)[0] > 0.05).float()
 
-        return image, proposals, labels
+            return image, proposals, labels
+
+        return self.feature_extractor_transform(image), proposals, torch.zeros_like(ground_truth_boxes)
 
     @staticmethod
     def _group_annotations_by_image(annotations: list[dict]) -> dict[int, list[dict]]:
